@@ -14,14 +14,14 @@ import java.net.URL
 class Go2RtcService : Service() {
 
     private val scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
-    private var process: Process? = null
+    // Esplicito java.lang.Process per evitare conflitto con android.os.Process
+    private var nativeProcess: java.lang.Process? = null
 
     companion object {
         const val CHANNEL_ID  = "go2rtc"
         const val NOTIF_ID    = 1
-        // go2rtc v1.9.4 — binario Go puro, gira su Android ARM64 senza problemi
         const val BINARY_URL  = "https://github.com/AlexxIT/go2rtc/releases/download/v1.9.4/go2rtc_linux_arm64"
-        const val BINARY_SIZE = 15_000_000L  // ~15 MB, usato per validare il download
+        const val BINARY_SIZE = 15_000_000L
 
         var statusCallback: ((String) -> Unit)? = null
 
@@ -51,11 +51,9 @@ class Go2RtcService : Service() {
 
     override fun onDestroy() {
         scope.cancel()
-        process?.destroy()
+        nativeProcess?.destroy()
         super.onDestroy()
     }
-
-    // ─── Core ────────────────────────────────────────────────────────────────
 
     private suspend fun launch() {
         try {
@@ -64,17 +62,19 @@ class Go2RtcService : Service() {
             status("Server locale attivo ●")
 
             val configPath = File(filesDir, "go2rtc.yaml").absolutePath
-            process = ProcessBuilder(binary.absolutePath, "-config", configPath)
+            val pb = ProcessBuilder(binary.absolutePath, "-config", configPath)
                 .redirectErrorStream(true)
-                .start()
 
-            // Legge log di go2rtc (visibili in logcat)
+            // start() restituisce java.lang.Process, cast esplicito
+            val proc = pb.start() as java.lang.Process
+            nativeProcess = proc
+
             scope.launch(Dispatchers.IO) {
-                process!!.inputStream.bufferedReader().forEachLine {
-                    Log.d("go2rtc", it)
+                proc.inputStream.bufferedReader().forEachLine { line ->
+                    Log.d("go2rtc", line)
                 }
             }
-            process!!.waitFor()
+            proc.waitFor()
 
         } catch (e: Exception) {
             Log.e("Go2RtcService", "Errore: ${e.message}", e)
@@ -116,7 +116,6 @@ log:
 
     private suspend fun download(url: String, dest: File) = withContext(Dispatchers.IO) {
         var conn = URL(url).openConnection() as HttpURLConnection
-        // Segui redirect (GitHub usa redirect verso CDN)
         conn.instanceFollowRedirects = true
         conn.connect()
         if (conn.responseCode == HttpURLConnection.HTTP_MOVED_PERM ||
@@ -139,8 +138,6 @@ log:
             }
         }
     }
-
-    // ─── Notifica ────────────────────────────────────────────────────────────
 
     private fun status(msg: String) {
         updateNotif(msg)
