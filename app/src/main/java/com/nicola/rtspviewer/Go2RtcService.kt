@@ -8,20 +8,15 @@ import android.util.Log
 import androidx.core.app.NotificationCompat
 import kotlinx.coroutines.*
 import java.io.*
-import java.net.HttpURLConnection
-import java.net.URL
 
 class Go2RtcService : Service() {
 
     private val scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
-    // Esplicito java.lang.Process per evitare conflitto con android.os.Process
     private var nativeProcess: java.lang.Process? = null
 
     companion object {
-        const val CHANNEL_ID  = "go2rtc"
-        const val NOTIF_ID    = 1
-        const val BINARY_URL  = "https://github.com/AlexxIT/go2rtc/releases/download/v1.9.4/go2rtc_linux_arm64"
-        const val BINARY_SIZE = 15_000_000L
+        const val CHANNEL_ID = "go2rtc"
+        const val NOTIF_ID   = 1
 
         var statusCallback: ((String) -> Unit)? = null
 
@@ -57,16 +52,27 @@ class Go2RtcService : Service() {
 
     private suspend fun launch() {
         try {
-            val binary = ensureBinary()
+            // go2rtc è impacchettato nell'APK come libreria nativa
+            // nativeLibraryDir è sempre eseguibile su Android (nessun blocco SELinux)
+            val nativeLibDir = applicationInfo.nativeLibraryDir
+            val binary = File(nativeLibDir, "libgo2rtc.so")
+
+            if (!binary.exists()) {
+                status("Errore: libgo2rtc.so non trovato in $nativeLibDir")
+                Log.e("go2rtc", "Binary not found: ${binary.absolutePath}")
+                return
+            }
+
+            binary.setExecutable(true)
             writeConfig()
             status("Server locale attivo ●")
 
             val configPath = File(filesDir, "go2rtc.yaml").absolutePath
-            val pb = ProcessBuilder(binary.absolutePath, "-config", configPath)
-                .redirectErrorStream(true)
+            Log.d("go2rtc", "Avvio: ${binary.absolutePath} -config $configPath")
 
-            // start() restituisce java.lang.Process, cast esplicito
-            val proc = pb.start() as java.lang.Process
+            val proc = ProcessBuilder(binary.absolutePath, "-config", configPath)
+                .redirectErrorStream(true)
+                .start() as java.lang.Process
             nativeProcess = proc
 
             scope.launch(Dispatchers.IO) {
@@ -74,23 +80,18 @@ class Go2RtcService : Service() {
                     Log.d("go2rtc", line)
                 }
             }
-            proc.waitFor()
+            val exitCode = proc.waitFor()
+            Log.w("go2rtc", "Processo terminato con codice: $exitCode")
+            status("Server arrestato (codice $exitCode) — riavvio…")
+
+            // Riavvia automaticamente se crasha
+            delay(3000)
+            launch()
 
         } catch (e: Exception) {
             Log.e("Go2RtcService", "Errore: ${e.message}", e)
             status("Errore: ${e.message}")
         }
-    }
-
-    private suspend fun ensureBinary(): File = withContext(Dispatchers.IO) {
-        val bin = File(filesDir, "go2rtc")
-        if (!bin.exists() || bin.length() < BINARY_SIZE) {
-            status("Download go2rtc (~15 MB)...")
-            download(BINARY_URL, bin)
-            bin.setExecutable(true)
-            status("Download completato ✓")
-        }
-        bin
     }
 
     private fun writeConfig() {
@@ -112,31 +113,6 @@ log:
   level: warn
 """.trimIndent()
         File(filesDir, "go2rtc.yaml").writeText(yaml)
-    }
-
-    private suspend fun download(url: String, dest: File) = withContext(Dispatchers.IO) {
-        var conn = URL(url).openConnection() as HttpURLConnection
-        conn.instanceFollowRedirects = true
-        conn.connect()
-        if (conn.responseCode == HttpURLConnection.HTTP_MOVED_PERM ||
-            conn.responseCode == HttpURLConnection.HTTP_MOVED_TEMP) {
-            conn = URL(conn.getHeaderField("Location")).openConnection() as HttpURLConnection
-            conn.connect()
-        }
-        val total = conn.contentLengthLong.coerceAtLeast(1)
-        conn.inputStream.use { input ->
-            FileOutputStream(dest).use { output ->
-                val buf = ByteArray(8192)
-                var downloaded = 0L
-                var n: Int
-                while (input.read(buf).also { n = it } != -1) {
-                    output.write(buf, 0, n)
-                    downloaded += n
-                    val pct = (downloaded * 100 / total).toInt()
-                    if (pct % 10 == 0) status("Download go2rtc... $pct%")
-                }
-            }
-        }
     }
 
     private fun status(msg: String) {
