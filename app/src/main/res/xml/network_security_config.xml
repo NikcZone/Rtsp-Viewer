@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+    Permette traffico cleartext verso localhost (go2rtc gira su porta 1984)
+    e verso la rete locale (RTSP/DVRIP della telecamera).
+    Nessun traffico esterno è necessario dopo il primo download del binario.
+-->
+<network-security-config>
+    <base-config cleartextTrafficPermitted="true">
+        <trust-anchors>
+            <certificates src="system" />
+        </trust-anchors>
+    </base-config>
+</network-security-config>
